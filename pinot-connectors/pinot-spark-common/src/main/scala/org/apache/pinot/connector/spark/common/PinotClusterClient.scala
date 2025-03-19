@@ -26,6 +26,8 @@ import org.apache.pinot.spi.utils.builder.TableNameBuilder
 
 import scala.util.{Failure, Success, Try}
 
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties
+
 /**
  * PinotCusterClient reads metadata from Pinot controller.
  */
@@ -224,6 +226,7 @@ private[pinot] case class TimeBoundaryInfo(timeColumn: String, timeValue: String
   def getRealtimePredicate: String = s""""$timeColumn" >= $timeValue"""
 }
 
+@JsonIgnoreProperties(ignoreUnknown = true)
 private[pinot] case class InstanceInfo(instanceName: String,
                                        hostName: String,
                                        port: String,
