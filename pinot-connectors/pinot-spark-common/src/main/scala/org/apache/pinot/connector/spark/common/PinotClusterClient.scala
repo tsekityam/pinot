@@ -19,8 +19,6 @@
 package org.apache.pinot.connector.spark.common
 
 import java.net.{URI, URLEncoder}
-import io.circe.Decoder
-import io.circe.generic.auto._
 import org.apache.pinot.connector.spark.common.query.ScanQuery
 import org.apache.pinot.spi.config.table.TableType
 import org.apache.pinot.spi.data.Schema
@@ -64,13 +62,16 @@ private[pinot] object PinotClusterClient extends Logging {
     Try {
       val uri = new URI(String.format(TABLE_BROKER_INSTANCES_TEMPLATE, controllerUrl, tableName))
       val response = HttpUtils.sendGetRequest(uri, authorization)
-      implicit val decodeIntOrString: Decoder[Either[Int, String]] =
-        Decoder[Int].map(Left(_)).or(Decoder[String].map(Right(_)))
-      val brokerUrls = decodeTo[List[Map[String, Either[Int, String]]]](response).map {
-        brokerEntry =>
-          val host = brokerEntry.get("host").get.right.get
-          val port = brokerEntry.get("port").get.left.get
-          s"$host:$port"
+
+      // Define a case class to represent the broker entry
+      case class BrokerEntry(host: String, port: Int)
+
+      // Decode the JSON response into a list of BrokerEntry objects
+      val brokerEntries = decodeTo(response, classOf[Array[BrokerEntry]]).toList
+
+      // Map the broker entries to "host:port" strings
+      val brokerUrls = brokerEntries.map { brokerEntry =>
+        s"${brokerEntry.host}:${brokerEntry.port}"
       }
 
       if (brokerUrls.isEmpty) {
@@ -103,7 +104,7 @@ private[pinot] object PinotClusterClient extends Logging {
       // pinot converts the given table name to the offline table name automatically
       val uri = new URI(String.format(TIME_BOUNDARY_TEMPLATE, brokerUrl, rawTableName))
       val response = HttpUtils.sendGetRequest(uri, authorization)
-      decodeTo[TimeBoundaryInfo](response)
+      decodeTo(response, classOf[TimeBoundaryInfo]) // Updated to use the new decodeTo function
     } match {
       case Success(decodedResponse) =>
         logDebug(s"Received time boundary for table $tableName, $decodedResponse")
@@ -181,13 +182,15 @@ private[pinot] object PinotClusterClient extends Logging {
     Try {
       val uri = new URI(String.format(INSTANCES_API_TEMPLATE, controllerUrl, instance))
       val response = HttpUtils.sendGetRequest(uri, authorization)
-      decodeTo[InstanceInfo](response)
+
+      // Use the updated decodeTo function with Jackson
+      decodeTo(response, classOf[InstanceInfo])
     } match {
-      case Success(decodedReponse) =>
-        decodedReponse
+      case Success(decodedResponse) =>
+        decodedResponse
       case Failure(exception) =>
         throw PinotException(
-          s"An error occured while reading instance info for: '$instance'",
+          s"An error occurred while reading instance info for: '$instance'",
           exception
         )
     }
@@ -198,7 +201,9 @@ private[pinot] object PinotClusterClient extends Logging {
       val encodedSqlQueryParam = URLEncoder.encode(sql, "UTF-8")
       val uri = new URI(String.format(ROUTING_TABLE_TEMPLATE, brokerUrl, encodedSqlQueryParam))
       val response = HttpUtils.sendGetRequest(uri, authorization)
-      decodeTo[Map[String, List[String]]](response)
+
+      // Use the updated decodeTo function with Jackson
+      decodeTo(response, classOf[Map[String, List[String]]])
     } match {
       case Success(decodedResponse) =>
         logDebug(s"Received routing table for query $sql, $decodedResponse")
