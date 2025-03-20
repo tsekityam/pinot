@@ -19,14 +19,14 @@
 package org.apache.pinot.connector.spark.common
 
 import java.net.{URI, URLEncoder}
-import io.circe.Decoder
-import io.circe.generic.auto._
 import org.apache.pinot.connector.spark.common.query.ScanQuery
 import org.apache.pinot.spi.config.table.TableType
 import org.apache.pinot.spi.data.Schema
 import org.apache.pinot.spi.utils.builder.TableNameBuilder
 
 import scala.util.{Failure, Success, Try}
+
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties
 
 /**
  * PinotCusterClient reads metadata from Pinot controller.
@@ -38,11 +38,11 @@ private[pinot] object PinotClusterClient extends Logging {
   private val ROUTING_TABLE_TEMPLATE = "http://%s/debug/routingTable/sql?query=%s"
   private val INSTANCES_API_TEMPLATE = "http://%s/instances/%s"
 
-  def getTableSchema(controllerUrl: String, tableName: String): Schema = {
+  def getTableSchema(controllerUrl: String, tableName: String, authorization: String): Schema = {
     val rawTableName = TableNameBuilder.extractRawTableName(tableName)
     Try {
       val uri = new URI(String.format(TABLE_SCHEMA_TEMPLATE, controllerUrl, rawTableName))
-      val response = HttpUtils.sendGetRequest(uri)
+      val response = HttpUtils.sendGetRequest(uri, authorization)
       Schema.fromString(response)
     } match {
       case Success(response) =>
@@ -60,17 +60,20 @@ private[pinot] object PinotClusterClient extends Logging {
    * Get available broker urls(host:port) for given table.
    * This method is used when if broker instances not defined in the datasource options.
    */
-  def getBrokerInstances(controllerUrl: String, tableName: String): List[String] = {
+  def getBrokerInstances(controllerUrl: String, tableName: String, authorization: String): List[String] = {
     Try {
       val uri = new URI(String.format(TABLE_BROKER_INSTANCES_TEMPLATE, controllerUrl, tableName))
-      val response = HttpUtils.sendGetRequest(uri)
-      implicit val decodeIntOrString: Decoder[Either[Int, String]] =
-        Decoder[Int].map(Left(_)).or(Decoder[String].map(Right(_)))
-      val brokerUrls = decodeTo[List[Map[String, Either[Int, String]]]](response).map {
-        brokerEntry =>
-          val host = brokerEntry.get("host").get.right.get
-          val port = brokerEntry.get("port").get.left.get
-          s"$host:$port"
+      val response = HttpUtils.sendGetRequest(uri, authorization)
+
+      // Define a case class to represent the broker entry
+      case class BrokerEntry(host: String, port: Int)
+
+      // Decode the JSON response into a list of BrokerEntry objects
+      val brokerEntries = decodeTo(response, classOf[Array[BrokerEntry]]).toList
+
+      // Map the broker entries to "host:port" strings
+      val brokerUrls = brokerEntries.map { brokerEntry =>
+        s"${brokerEntry.host}:${brokerEntry.port}"
       }
 
       if (brokerUrls.isEmpty) {
@@ -97,13 +100,13 @@ private[pinot] object PinotClusterClient extends Logging {
    *
    * @return time boundary info if table exist and segments push type is 'append' or None otherwise
    */
-  def getTimeBoundaryInfo(brokerUrl: String, tableName: String): Option[TimeBoundaryInfo] = {
+  def getTimeBoundaryInfo(brokerUrl: String, tableName: String, authorization: String): Option[TimeBoundaryInfo] = {
     val rawTableName = TableNameBuilder.extractRawTableName(tableName)
     Try {
       // pinot converts the given table name to the offline table name automatically
       val uri = new URI(String.format(TIME_BOUNDARY_TEMPLATE, brokerUrl, rawTableName))
-      val response = HttpUtils.sendGetRequest(uri)
-      decodeTo[TimeBoundaryInfo](response)
+      val response = HttpUtils.sendGetRequest(uri, authorization)
+      decodeTo(response, classOf[TimeBoundaryInfo]) // Updated to use the new decodeTo function
     } match {
       case Success(decodedResponse) =>
         logDebug(s"Received time boundary for table $tableName, $decodedResponse")
@@ -142,22 +145,23 @@ private[pinot] object PinotClusterClient extends Logging {
    * @return realtime and/or offline routing table(s)
    */
   def getRoutingTable(brokerUrl: String,
+                      authorization: String,
                       scanQuery: ScanQuery): Map[TableType, Map[String, List[String]]] = {
     val routingTables =
       if (scanQuery.isTableOffline) {
         val offlineRoutingTable =
-          getRoutingTableForQuery(brokerUrl, scanQuery.offlineSelectQuery)
+          getRoutingTableForQuery(brokerUrl, authorization, scanQuery.offlineSelectQuery)
         Map(TableType.OFFLINE -> offlineRoutingTable)
       } else if (scanQuery.isTableRealtime) {
         val realtimeRoutingTable =
-          getRoutingTableForQuery(brokerUrl, scanQuery.realtimeSelectQuery)
+          getRoutingTableForQuery(brokerUrl, authorization, scanQuery.realtimeSelectQuery)
         Map(TableType.REALTIME -> realtimeRoutingTable)
       } else {
         // hybrid table
         val offlineRoutingTable =
-          getRoutingTableForQuery(brokerUrl, scanQuery.offlineSelectQuery)
+          getRoutingTableForQuery(brokerUrl, authorization, scanQuery.offlineSelectQuery)
         val realtimeRoutingTable =
-          getRoutingTableForQuery(brokerUrl, scanQuery.realtimeSelectQuery)
+          getRoutingTableForQuery(brokerUrl, authorization, scanQuery.realtimeSelectQuery)
         Map(
           TableType.OFFLINE -> offlineRoutingTable,
           TableType.REALTIME -> realtimeRoutingTable
@@ -176,28 +180,32 @@ private[pinot] object PinotClusterClient extends Logging {
    *
    * @return InstanceInfo
    */
-  def getInstanceInfo(controllerUrl: String, instance: String): InstanceInfo = {
+  def getInstanceInfo(controllerUrl: String, authorization: String, instance: String): InstanceInfo = {
     Try {
       val uri = new URI(String.format(INSTANCES_API_TEMPLATE, controllerUrl, instance))
-      val response = HttpUtils.sendGetRequest(uri)
-      decodeTo[InstanceInfo](response)
+      val response = HttpUtils.sendGetRequest(uri, authorization)
+
+      // Use the updated decodeTo function with Jackson
+      decodeTo(response, classOf[InstanceInfo])
     } match {
-      case Success(decodedReponse) =>
-        decodedReponse
+      case Success(decodedResponse) =>
+        decodedResponse
       case Failure(exception) =>
         throw PinotException(
-          s"An error occured while reading instance info for: '$instance'",
+          s"An error occurred while reading instance info for: '$instance'",
           exception
         )
     }
   }
 
-  private def getRoutingTableForQuery(brokerUrl: String, sql: String): Map[String, List[String]] = {
+  private def getRoutingTableForQuery(brokerUrl: String, authorization: String, sql: String): Map[String, List[String]] = {
     Try {
       val encodedSqlQueryParam = URLEncoder.encode(sql, "UTF-8")
       val uri = new URI(String.format(ROUTING_TABLE_TEMPLATE, brokerUrl, encodedSqlQueryParam))
-      val response = HttpUtils.sendGetRequest(uri)
-      decodeTo[Map[String, List[String]]](response)
+      val response = HttpUtils.sendGetRequest(uri, authorization)
+
+      // Use the updated decodeTo function with Jackson
+      decodeTo(response, classOf[Map[String, List[String]]])
     } match {
       case Success(decodedResponse) =>
         logDebug(s"Received routing table for query $sql, $decodedResponse")
@@ -218,6 +226,7 @@ private[pinot] case class TimeBoundaryInfo(timeColumn: String, timeValue: String
   def getRealtimePredicate: String = s""""$timeColumn" >= $timeValue"""
 }
 
+@JsonIgnoreProperties(ignoreUnknown = true)
 private[pinot] case class InstanceInfo(instanceName: String,
                                        hostName: String,
                                        port: String,

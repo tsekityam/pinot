@@ -1630,16 +1630,6 @@
         <version>${scala-xml.version}</version>
       </dependency>
       <dependency>
-        <groupId>io.circe</groupId>
-        <artifactId>circe-parser_${scala.compat.version}</artifactId>
-        <version>${circe.version}</version>
-      </dependency>
-      <dependency>
-        <groupId>io.circe</groupId>
-        <artifactId>circe-generic_${scala.compat.version}</artifactId>
-        <version>${circe.version}</version>
-      </dependency>
-      <dependency>
         <groupId>org.codehaus.plexus</groupId>
         <artifactId>plexus-classworlds</artifactId>
         <version>${plexus-classworlds.version}</version>
